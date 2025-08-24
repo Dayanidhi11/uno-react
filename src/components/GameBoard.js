@@ -12,16 +12,28 @@ const GameBoard = ({
 	session,
 	onCallUno,
 	timerData,
+	currentUserId,
 }) => {
 	const [selectedWildColor, setSelectedWildColor] = useState("red");
 	const [selectedCard, setSelectedCard] = useState(null);
 
+	// Debug logging for props
+	// Only log when cards change
+	if (playerHand?.length) {
+		console.log(
+			"🎮 HAND:",
+			playerHand.length,
+			"cards, playable:",
+			playableCards
+		);
+	}
+
 	// Move all hooks before any early returns
-	const isMyTurn = gameData?.current_turn === session?.user_id;
+	const isMyTurn = gameData?.current_turn === currentUserId;
 	const topCard = gameData?.top_card;
-	const myPlayer = gameData?.players?.[session?.user_id];
+	const myPlayer = gameData?.players?.[currentUserId];
 	const players = Object.entries(gameData?.players || {});
-	const otherPlayers = players.filter(([id]) => id !== session?.user_id);
+	const otherPlayers = players.filter(([id]) => id !== currentUserId);
 
 	// Get timer value from server data
 	const turnTimer = timerData?.time_remaining || 15;
@@ -46,30 +58,113 @@ const GameBoard = ({
 		);
 	}
 
+	// Game over screen
+	if (gameData.game_phase === "finished") {
+		return (
+			<div
+				style={{
+					display: "flex",
+					flexDirection: "column",
+					justifyContent: "center",
+					alignItems: "center",
+					height: "100vh",
+					background: "linear-gradient(135deg, #FFD700 0%, #FFA500 100%)",
+					fontSize: "24px",
+					color: "#333",
+					textAlign: "center",
+					padding: "20px",
+				}}
+			>
+				<div style={{ marginBottom: "30px" }}>
+					<h1 style={{ fontSize: "48px", margin: "0 0 20px 0" }}>
+						🏆 Game Over!
+					</h1>
+
+					{gameData.final_scores && (
+						<div style={{ fontSize: "20px", lineHeight: "1.6" }}>
+							<h2 style={{ margin: "20px 0" }}>Final Scores:</h2>
+							{Object.values(gameData.final_scores).map((playerScore) => (
+								<div
+									key={playerScore.userId}
+									style={{
+										margin: "10px 0",
+										padding: "10px 20px",
+										background:
+											playerScore.result === "winner" ? "#90EE90" : "#FFB6C1",
+										borderRadius: "10px",
+										display: "inline-block",
+										minWidth: "300px",
+									}}
+								>
+									{playerScore.result === "winner" ? "🏆" : "💔"}{" "}
+									{playerScore.username}:{" "}
+									{playerScore.score > 0
+										? `+${playerScore.score}`
+										: playerScore.score}{" "}
+									points
+									<br />
+									<small>({playerScore.result})</small>
+								</div>
+							))}
+						</div>
+					)}
+				</div>
+
+				<button
+					onClick={() => window.location.reload()}
+					style={{
+						padding: "15px 30px",
+						fontSize: "18px",
+						backgroundColor: "#4CAF50",
+						color: "white",
+						border: "none",
+						borderRadius: "10px",
+						cursor: "pointer",
+						marginTop: "20px",
+					}}
+				>
+					🔄 Play Again
+				</button>
+			</div>
+		);
+	}
+
 	const canPlayCard = (card, cardIndex) => {
 		if (!isMyTurn) return false;
-
-		// Use backend-provided playable cards list
 		return playableCards && playableCards.includes(cardIndex);
 	};
 
-	const handleCardClick = (card) => {
-		if (!canPlayCard(card)) {
-			console.log("❌ INVALID PLAY: Cannot play this card", card);
+	const handleCardClick = (card, cardIndex) => {
+		console.log("🖱️ CARD CLICKED:", card, "at index", cardIndex);
+		console.log("🖱️ onPlayCard function:", typeof onPlayCard);
+
+		if (!canPlayCard(card, cardIndex)) {
+			console.log(
+				"❌ INVALID PLAY: Cannot play this card",
+				card,
+				"at index",
+				cardIndex
+			);
+			console.log("❌ Playable cards:", playableCards);
+			console.log("❌ Is my turn:", isMyTurn);
 			return;
 		}
 
-		console.log("🃏 PLAYING CARD:", card);
+		console.log("🃏 PLAYING CARD:", card, "at index", cardIndex);
+		console.log("🃏 About to call onPlayCard with:", card);
 		setSelectedCard(card);
 
 		// Handle wild cards - need to choose color
 		if (card.type === "wild" || card.type === "wild_draw_four") {
 			const cardWithColor = { ...card, chosen_color: selectedWildColor };
 			console.log("🌈 WILD CARD: Chosen color:", selectedWildColor);
+			console.log("🌈 Calling onPlayCard with wild card:", cardWithColor);
 			onPlayCard(cardWithColor);
 		} else {
+			console.log("🎯 Calling onPlayCard with regular card:", card);
 			onPlayCard(card);
 		}
+		console.log("✅ onPlayCard call completed");
 	};
 
 	// Get opponent player
@@ -226,7 +321,7 @@ const GameBoard = ({
 							Current Turn:
 							<br />
 							<span style={{ color: "#FFD700", fontSize: "20px" }}>
-								{gameData.current_turn === session?.user_id
+								{gameData.current_turn === currentUserId
 									? myPlayer?.username || "You"
 									: opponentData?.username || "Opponent"}
 							</span>
@@ -236,7 +331,12 @@ const GameBoard = ({
 						{timerData && (
 							<motion.div
 								style={{
-									background: turnTimer <= 3 ? "red" : "orange",
+									background:
+										turnTimer <= 3
+											? "red"
+											: currentTimerPlayer === currentUserId
+											? "orange"
+											: "gray",
 									color: "white",
 									padding: "10px 20px",
 									borderRadius: "20px",
@@ -251,7 +351,10 @@ const GameBoard = ({
 									duration: 0.5,
 								}}
 							>
-								⏰ {turnTimer}s
+								{currentTimerPlayer === currentUserId
+									? "🔥 YOUR TURN"
+									: "⏳ OPPONENT'S TURN"}{" "}
+								- ⏰ {turnTimer}s
 							</motion.div>
 						)}
 
@@ -428,7 +531,7 @@ const GameBoard = ({
 									<Card
 										card={card}
 										isPlayable={playable}
-										onClick={() => handleCardClick(card)}
+										onClick={() => handleCardClick(card, index)}
 										style={{
 											width: "60px",
 											height: "90px",

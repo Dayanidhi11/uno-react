@@ -18,6 +18,10 @@ const UnoGame = () => {
 	const [gameData, setGameData] = useState(null);
 	const [logs, setLogs] = useState([]);
 	const [timerData, setTimerData] = useState(null);
+	const [currentUserId, setCurrentUserId] = useState(() => {
+		// Initialize from localStorage if available
+		return localStorage.getItem("uno_current_user_id") || null;
+	});
 
 	// Initialize Nakama client
 	useEffect(() => {
@@ -36,11 +40,19 @@ const UnoGame = () => {
 		initClient();
 	}, []);
 
-	// Utility function to add logs
-	const addLog = useCallback((message, type = "info") => {
+	// Utility function to add logs with throttling
+	const addLog = useCallback((message, type = "info", skipUI = false) => {
 		const timestamp = new Date().toLocaleTimeString();
-		setLogs((prev) => [...prev, { timestamp, message, type }]);
 		console.log(`[UNO] ${message}`);
+
+		// Skip UI updates for frequent/debug messages to prevent flickering
+		if (!skipUI) {
+			setLogs((prev) => {
+				// Limit logs to last 50 entries to prevent memory issues
+				const newLogs = [...prev, { timestamp, message, type }];
+				return newLogs.slice(-50);
+			});
+		}
 	}, []);
 
 	// Authentication functions
@@ -80,8 +92,19 @@ const UnoGame = () => {
 				username
 			);
 			addLog(`🎮 Username: ${username}`);
+			console.log("🔍 AUTH RESULT:", authResult);
+			console.log("🔍 AUTH RESULT KEYS:", Object.keys(authResult));
+			console.log("🔍 AUTH RESULT user_id:", authResult.user_id);
+			console.log("🔍 AUTH RESULT userId:", authResult.userId);
 			setSession(authResult);
-			addLog(`✅ Logged in! User ID: ${authResult.user_id}`);
+			setCurrentUserId(authResult.user_id);
+			// Store user ID in localStorage for persistence
+			localStorage.setItem("uno_current_user_id", authResult.user_id);
+			console.log("🔍 SESSION SET TO:", authResult);
+			console.log("🔍 USER ID SET TO:", authResult.user_id);
+			addLog(
+				`✅ Logged in! User ID: ${authResult.user_id || authResult.userId}`
+			);
 
 			// Create socket connection
 			addLog("🔌 Creating socket connection...");
@@ -90,7 +113,7 @@ const UnoGame = () => {
 			setSocket(newSocket);
 			addLog("✅ Connected to server");
 
-			// Set up socket event handlers
+			// Set up socket event handlers now that we have the user ID
 			setupSocketHandlers(newSocket);
 
 			setGameState("lobby");
@@ -121,6 +144,7 @@ const UnoGame = () => {
 
 	// Socket event handlers
 	const setupSocketHandlers = (socket) => {
+		console.log("🔌 Setting up socket handlers...");
 		socket.onmatchdata = (matchData) => {
 			try {
 				console.log("📨 RAW MATCH DATA RECEIVED:", matchData);
@@ -158,7 +182,13 @@ const UnoGame = () => {
 
 				const data = JSON.parse(dataString);
 				console.log("✅ PARSED MATCH DATA:", data);
-				handleMatchData(data);
+
+				// Get current user ID from localStorage to avoid closure issues
+				const storedUserId = localStorage.getItem("uno_current_user_id");
+				console.log("🔍 STORED USER ID:", storedUserId);
+
+				// Handle match data directly with stored user ID
+				handleMatchDataWithUserId(data, storedUserId);
 			} catch (error) {
 				addLog(`❌ Error processing match data: ${error.message}`, "error");
 				console.error("❌ MATCH DATA ERROR:", error, matchData);
@@ -173,21 +203,53 @@ const UnoGame = () => {
 			);
 		};
 
+		// Matchmaker event handlers
+		socket.onmatchmakerticket = (ticket) => {
+			console.log("🎫 Matchmaker ticket received:", ticket);
+			addLog(`🎫 Matchmaking ticket: ${ticket.ticket}`);
+			addLog("⏳ Waiting for opponents...");
+		};
+
+		socket.onmatchmakermatched = async (matched) => {
+			console.log("🎯 Matchmaker matched:", matched);
+			addLog("🎯 Match found! Joining...");
+
+			try {
+				// Join the match that was created by the matchmaker
+				const match = await socket.joinMatch(matched.match_id);
+				setCurrentMatch(match);
+				addLog("✅ Joined random match successfully!");
+			} catch (error) {
+				addLog(`❌ Failed to join matched game: ${error.message}`, "error");
+				console.error("Failed to join matched game:", error);
+			}
+		};
+
 		socket.ondisconnect = () => {
 			addLog("❌ Disconnected from server", "error");
 		};
 	};
 
-	// Handle match data from server
-	const handleMatchData = (data) => {
-		addLog(`📨 Received match data: ${data.type}`, "info");
+	// Handle match data from server with explicit user ID (avoids closure issues)
+	const handleMatchDataWithUserId = (data, userId) => {
+		// Skip UI logging for frequent timer updates to prevent flickering
+		const skipUI = data.type === "timer_update";
+		addLog(`📨 Received match data: ${data.type}`, "info", skipUI);
+		console.log("🔍 HANDLING MATCH DATA WITH USER ID:", userId);
 
 		switch (data.type) {
 			case "player_hand":
 				// Handle individual player hand message
-				if (data.player_id === session?.user_id) {
-					console.log("🃏 RECEIVED MY HAND (NEW FORMAT):", data.hand);
-					console.log("🎯 PLAYABLE CARDS:", data.playable_cards);
+				console.log("🔍 PLAYER_HAND MESSAGE RECEIVED:");
+				console.log("  - Player ID in message:", data.player_id);
+				console.log("  - My user ID:", userId);
+				console.log("  - IDs match:", data.player_id === userId);
+				console.log("  - Hand data:", data.hand);
+				console.log("  - Hand length:", data.hand?.length);
+
+				if (data.player_id === userId) {
+					console.log("✅ THIS IS MY HAND!");
+					console.log("🃏 RECEIVED MY HAND:", data.hand);
 					setPlayerHand(data.hand);
 					setPlayableCards(data.playable_cards || []);
 					addLog(`🃏 Player hand updated: ${data.hand.length} cards`, "info");
@@ -195,6 +257,8 @@ const UnoGame = () => {
 					data.hand.forEach((card, index) => {
 						console.log(`Card ${index + 1}:`, card);
 					});
+				} else {
+					console.log("❌ NOT MY HAND - this is for another player");
 				}
 				break;
 
@@ -207,9 +271,37 @@ const UnoGame = () => {
 				setGameData(data.state);
 
 				// Handle new player_hands structure
-				if (data.player_hands && session?.user_id) {
-					const myHand = data.player_hands[session.user_id];
+				console.log("🔍 CHECKING PLAYER HANDS:");
+				console.log("  - data.player_hands exists:", !!data.player_hands);
+				console.log("  - data.player_hands value:", data.player_hands);
+				console.log("  - userId:", userId);
+				console.log(
+					"  - player_hands keys:",
+					data.player_hands ? Object.keys(data.player_hands) : "none"
+				);
+
+				console.log("🔍 CONDITION CHECK:");
+				console.log("  - data.player_hands truthy:", !!data.player_hands);
+				console.log("  - userId truthy:", !!userId);
+				console.log(
+					"  - Both conditions met:",
+					!!(data.player_hands && userId)
+				);
+
+				if (data.player_hands && userId) {
+					console.log("🔍 LOOKING FOR MY HAND:");
+					console.log("  - My user ID:", userId);
+					console.log(
+						"  - Available player IDs:",
+						Object.keys(data.player_hands)
+					);
+
+					const myHand = data.player_hands[userId];
+					console.log("  - My hand found:", !!myHand);
+					console.log("  - My hand data:", myHand);
+
 					if (myHand) {
+						console.log("✅ FOUND MY HAND! Setting playerHand state...");
 						console.log("🃏 RECEIVED MY HAND:", myHand);
 						setPlayerHand(myHand);
 						addLog(`🃏 Player hand updated: ${myHand.length} cards`, "info");
@@ -219,21 +311,17 @@ const UnoGame = () => {
 						});
 					} else {
 						console.log("❌ MY HAND NOT FOUND IN PLAYER_HANDS");
+						console.log(
+							"❌ Available hands for:",
+							Object.keys(data.player_hands)
+						);
 						addLog("❌ My hand not found in game state", "error");
 					}
-				} else if (data.player_hand) {
-					// Fallback for old structure
-					console.log(
-						"🃏 RECEIVED PLAYER HAND (OLD FORMAT):",
-						data.player_hand
-					);
-					setPlayerHand(data.player_hand);
-					addLog(
-						`🃏 Player hand updated: ${data.player_hand.length} cards`,
-						"info"
-					);
 				} else {
 					console.log("❌ NO PLAYER HAND DATA IN GAME STATE");
+					console.log("❌ Conditions failed:");
+					console.log("  - data.player_hands:", !!data.player_hands);
+					console.log("  - userId:", !!userId);
 					addLog("❌ No player hand data received", "error");
 				}
 
@@ -273,11 +361,228 @@ const UnoGame = () => {
 			case "auto_draw":
 				addLog(`🤖 ${data.player_id} auto-drew a card (timer expired)`);
 				break;
+			case "game_ended":
+				console.log("🏆 GAME ENDED:", data);
+				addLog(`🏆 Game ended: ${data.reason}`, "info");
+
+				if (data.final_scores) {
+					console.log("🏆 Final scores:", data.final_scores);
+
+					// Display final scores
+					Object.values(data.final_scores).forEach((playerScore) => {
+						const resultIcon = playerScore.result === "winner" ? "🏆" : "💔";
+						const scoreText =
+							playerScore.score > 0
+								? `+${playerScore.score}`
+								: playerScore.score;
+						addLog(
+							`${resultIcon} ${playerScore.username}: ${scoreText} points (${playerScore.result})`,
+							"info"
+						);
+					});
+
+					// Show winner message
+					if (data.winner) {
+						const winnerScore = data.final_scores[data.winner];
+						if (winnerScore) {
+							addLog(`🎉 ${winnerScore.username} wins the game!`, "success");
+						}
+					}
+				}
+
+				// Set game as finished
+				setGameData((prev) => ({
+					...prev,
+					game_phase: "finished",
+					final_scores: data.final_scores,
+				}));
+				break;
+			case "player_left":
+				addLog(`👋 Player ${data.player_id} left the game`);
+				break;
+			case "play_card_error":
+				console.log("❌ PLAY CARD ERROR:", data);
+				addLog(`❌ ${data.message}`, "error");
+
+				// Show more specific error details
+				if (data.error === "card_not_owned") {
+					addLog(
+						"💡 Make sure you're selecting a card from your hand",
+						"warning"
+					);
+				} else if (data.error === "invalid_play") {
+					addLog(
+						`💡 You can only play cards that match the color (${data.top_card?.color}) or type (${data.top_card?.type}) of the top card`,
+						"warning"
+					);
+				}
+				break;
 			default:
 				addLog(`❓ Unknown match data: ${data.type}`, "info");
 				console.log("Full unknown match data:", data);
 		}
 	};
+
+	// Handle match data from server (legacy - keeping for compatibility)
+	const handleMatchData = useCallback(
+		(data) => {
+			addLog(`📨 Received match data: ${data.type}`, "info");
+			console.log("🔍 CURRENT SESSION STATE:", session);
+			console.log("🔍 CURRENT USER ID:", currentUserId);
+
+			switch (data.type) {
+				case "player_hand":
+					// Handle individual player hand message
+					console.log("🔍 PLAYER_HAND MESSAGE RECEIVED:");
+					console.log("  - Player ID in message:", data.player_id);
+					console.log("  - My current user ID:", currentUserId);
+					console.log("  - IDs match:", data.player_id === currentUserId);
+					console.log("  - Hand data:", data.hand);
+					console.log("  - Hand length:", data.hand?.length);
+
+					if (data.player_id === currentUserId) {
+						console.log("✅ THIS IS MY HAND!");
+						console.log("🃏 RECEIVED MY HAND (NEW FORMAT):", data.hand);
+						console.log("🎯 PLAYABLE CARDS:", data.playable_cards);
+						setPlayerHand(data.hand);
+						setPlayableCards(data.playable_cards || []);
+						addLog(`🃏 Player hand updated: ${data.hand.length} cards`, "info");
+						// Log each card for debugging
+						data.hand.forEach((card, index) => {
+							console.log(`Card ${index + 1}:`, card);
+						});
+					} else {
+						console.log("❌ NOT MY HAND - this is for another player");
+					}
+					break;
+
+				case "game_state":
+					addLog(
+						`🎯 Game state update - Phase: ${data.state?.game_phase}`,
+						"info"
+					);
+					console.log("🔍 FULL GAME STATE DATA:", data);
+					setGameData(data.state);
+
+					// Handle new player_hands structure
+					console.log("🔍 CHECKING PLAYER HANDS:");
+					console.log("  - data.player_hands exists:", !!data.player_hands);
+					console.log("  - data.player_hands value:", data.player_hands);
+					console.log("  - currentUserId:", currentUserId);
+					console.log(
+						"  - player_hands keys:",
+						data.player_hands ? Object.keys(data.player_hands) : "none"
+					);
+
+					console.log("🔍 CONDITION CHECK:");
+					console.log("  - data.player_hands truthy:", !!data.player_hands);
+					console.log("  - currentUserId truthy:", !!currentUserId);
+					console.log(
+						"  - Both conditions met:",
+						!!(data.player_hands && currentUserId)
+					);
+
+					if (data.player_hands && currentUserId) {
+						console.log("🔍 LOOKING FOR MY HAND:");
+						console.log("  - My user ID:", currentUserId);
+						console.log(
+							"  - Available player IDs:",
+							Object.keys(data.player_hands)
+						);
+
+						const myHand = data.player_hands[currentUserId];
+						console.log("  - My hand found:", !!myHand);
+						console.log("  - My hand data:", myHand);
+
+						if (myHand) {
+							console.log("✅ FOUND MY HAND! Setting playerHand state...");
+							console.log("🃏 RECEIVED MY HAND:", myHand);
+							setPlayerHand(myHand);
+							addLog(`🃏 Player hand updated: ${myHand.length} cards`, "info");
+							// Log each card for debugging
+							myHand.forEach((card, index) => {
+								console.log(`Card ${index + 1}:`, card);
+							});
+						} else {
+							console.log("❌ MY HAND NOT FOUND IN PLAYER_HANDS");
+							console.log(
+								"❌ Available hands for:",
+								Object.keys(data.player_hands)
+							);
+							addLog("❌ My hand not found in game state", "error");
+						}
+					} else if (data.player_hand) {
+						// Fallback for old structure
+						console.log(
+							"🃏 RECEIVED PLAYER HAND (OLD FORMAT):",
+							data.player_hand
+						);
+						setPlayerHand(data.player_hand);
+						addLog(
+							`🃏 Player hand updated: ${data.player_hand.length} cards`,
+							"info"
+						);
+					} else {
+						console.log("❌ NO PLAYER HAND DATA IN GAME STATE");
+						console.log("❌ Conditions failed:");
+						console.log("  - data.player_hands:", !!data.player_hands);
+						console.log("  - currentUserId:", !!currentUserId);
+						addLog("❌ No player hand data received", "error");
+					}
+
+					if (data.state.game_phase === "playing" && gameState !== "playing") {
+						setGameState("playing");
+						addLog("🎮 Game started!");
+					}
+					break;
+				case "game_started":
+					addLog(`🎮 ${data.message}`);
+					console.log("🎮 GAME STARTED - waiting for game_state message...");
+					break;
+				case "player_joined":
+					addLog(
+						`👤 ${data.player_name} joined (${data.player_count}/2 players)`
+					);
+					break;
+				case "game_over":
+					addLog(`🏆 Game Over! Winner: ${data.winner_id}`);
+					break;
+				case "card_played":
+					addLog(`🃏 ${data.player_id} played a card`);
+					break;
+				case "card_drawn":
+					addLog(`📥 ${data.player_id} drew a card`);
+					break;
+				case "timer_update":
+					// Update timer data for GameBoard component
+					setTimerData(data);
+					console.log(
+						`⏰ Timer: ${data.time_remaining}s for ${data.current_player}`
+					);
+					break;
+				case "auto_play":
+					addLog(`🤖 ${data.player_id} auto-played a card (timer expired)`);
+					break;
+				case "auto_draw":
+					addLog(`🤖 ${data.player_id} auto-drew a card (timer expired)`);
+					break;
+				default:
+					addLog(`❓ Unknown match data: ${data.type}`, "info");
+					console.log("Full unknown match data:", data);
+			}
+		},
+		[
+			session,
+			currentUserId,
+			gameState,
+			addLog,
+			setPlayerHand,
+			setPlayableCards,
+			setGameData,
+			setGameState,
+			setTimerData,
+		]
+	);
 
 	// Game actions
 	const createPrivateMatch = async () => {
@@ -318,10 +623,17 @@ const UnoGame = () => {
 	const findRandomMatch = async () => {
 		try {
 			addLog("Looking for random match...");
+			console.log("🔍 Starting matchmaker with query '*', min: 2, max: 2");
+
 			const ticket = await socket.addMatchmaker("*", 2, 2);
+			console.log("🎫 Received matchmaker ticket:", ticket);
 			addLog("🔍 Searching for opponents...");
+
+			// The onmatchmakermatched handler will take care of joining the match
+			// when opponents are found
 		} catch (error) {
 			addLog(`❌ Matchmaking failed: ${error.message}`, "error");
+			console.error("Matchmaking error:", error);
 		}
 	};
 
@@ -419,6 +731,11 @@ const UnoGame = () => {
 					/>
 				);
 			case "playing":
+				console.log("🎮 RENDERING GAMEBOARD WITH:");
+				console.log("  - playerHand:", playerHand);
+				console.log("  - playerHand length:", playerHand?.length);
+				console.log("  - playableCards:", playableCards);
+				console.log("  - gameData:", gameData);
 				return (
 					<GameBoard
 						gameData={gameData}
@@ -429,6 +746,7 @@ const UnoGame = () => {
 						onPassTurn={passTurn}
 						onCallUno={callUno}
 						session={session}
+						currentUserId={currentUserId}
 						timerData={timerData}
 					/>
 				);

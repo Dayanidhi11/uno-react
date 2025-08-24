@@ -84,7 +84,19 @@ const Card = ({ card, isPlayable, onClick, isSelected, style, className }) => {
 			whileHover={isPlayable ? "hover" : {}}
 			whileTap={isPlayable ? "tap" : {}}
 			animate={isPlayable ? "playable" : {}}
-			onClick={isPlayable ? onClick : undefined}
+			onClick={
+				isPlayable
+					? () => {
+							console.log(
+								"🎯 CARD CLICKED:",
+								card.color,
+								card.type,
+								card.value
+							);
+							onClick && onClick();
+					  }
+					: undefined
+			}
 			layout
 		>
 			{/* Text-based card display */}
